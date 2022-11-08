@@ -56,7 +56,7 @@ private fun PlaylistTrack.toPlaylistTrackData(number: Int): PlaylistTrackData {
     return PlaylistTrackData(
         number = number,
         addedUserId = this.addedBy.id,
-        addedAt = this.addedAt.toString(),
+        addedAt = this.addedAt.toInstant().toString(),
         trackUrl = track?.externalUrls?.externalUrls?.values?.firstOrNull()
             ?: episode?.externalUrls?.externalUrls?.values?.firstOrNull() ?: "",
         title = track?.name ?: episode?.name ?: "",
@@ -201,13 +201,16 @@ suspend fun main(args: Array<String>) {
 
 fun fetchLoop(api: SpotifyApi, playlistId: String, usersWithCache: UsersWithCache, jda: JDA) {
     val results = pullTracks(api, playlistId, usersWithCache)
-
+    var c = 0
+    var n = 0
+    var p = 0
+    var e = 0
     val messages = results.mapNotNull {
         when(it) {
-            is TrackUpdateResult.Conflict -> makeTrackAddedEmbedText(it, usersWithCache)
-            is TrackUpdateResult.Existing -> null
-            is TrackUpdateResult.Pass -> null
-            is TrackUpdateResult.NewTrack -> makeTrackAddedEmbedText(it, usersWithCache)
+            is TrackUpdateResult.Conflict -> makeTrackAddedEmbedText(it, usersWithCache).also { c++ }
+            is TrackUpdateResult.Existing -> null.also{ e++ }
+            is TrackUpdateResult.Pass -> null.also{ p++ }
+            is TrackUpdateResult.NewTrack -> makeTrackAddedEmbedText(it, usersWithCache).also { n++ }
         }
     }
 
@@ -222,6 +225,7 @@ fun fetchLoop(api: SpotifyApi, playlistId: String, usersWithCache: UsersWithCach
         }
     }
     println("sent ${messages.size} messages @ ${Instant.now()}")
+    println("new: $n\tconflict: $c\tpass: $p\texist: $e")
 }
 
 fun pullTracks(
@@ -234,6 +238,7 @@ fun pullTracks(
             Instant.parse(it)
         }.getOrNull()
     }?:Instant.now()
+    println("latestTime = $latestTime")
 
     PlaylistDiffDatabase.clearNumberUpdateFlag()
     val results = getPlaylistTracksFromSpotify(api, playlistId).map { track ->
@@ -277,7 +282,7 @@ fun updateTrackData(track: PlaylistTrackData, latestTime: Instant): TrackUpdateR
         }
     }
     val addedAt = runCatching { Instant.parse(track.addedAt) }.getOrNull()
-    if(addedAt?.isAfter(latestTime) == true) {
+    if(addedAt?.isBefore(latestTime) == true) {
         return TrackUpdateResult.Pass(track)
     }
     val conflicts = PlaylistDiffDatabase.searchTitleConflict(track)
@@ -299,7 +304,7 @@ fun getPlaylistTracksFromSpotify(api: SpotifyApi, playlistId: String): List<Play
             }.getOrNull()
             result ?: return emptyList()
             list.addAll(result.items.mapIndexed { index, playlistTrack ->
-                playlistTrack.toPlaylistTrackData(index + result.offset)
+                playlistTrack.toPlaylistTrackData(index + result.offset + 1)
             })
             val next = result.next ?: return list
             offset += limit
