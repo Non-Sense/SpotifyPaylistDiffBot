@@ -24,9 +24,6 @@ repositories {
 
 application {
     mainClass.value("com.n0n5ense.spotifydiff.MainKt")
-//    System.setProperty("spotifyClientId", spotifyClientId ?: "")
-//    System.setProperty("spotifyClientSecret", spotifyClientSecret ?: "")
-//    System.setProperty("spotifyDiscordBotToken", spotifyDiscordBotToken ?: "")
 }
 
 dependencies {
@@ -38,7 +35,7 @@ dependencies {
     implementation("io.arrow-kt:arrow-core:1.1.2")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.6.4")
     implementation("org.jetbrains.kotlinx:kotlinx-cli:0.3.5")
-    implementation("com.adamratzman:spotify-api-kotlin-core:3.8.8")
+    implementation("se.michaelthelin.spotify:spotify-web-api-java:7.2.2")
     implementation("net.dv8tion:JDA:4.3.0_277")
     implementation("org.jetbrains.kotlin:kotlin-stdlib:1.7.20")
     testImplementation("org.jetbrains.kotlin:kotlin-test:1.7.20")

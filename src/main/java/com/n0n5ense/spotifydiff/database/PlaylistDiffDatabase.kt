@@ -70,6 +70,13 @@ class PlaylistDiffDatabase {
             return true
         }
 
+        fun getLatestTime(): String? {
+            return transaction {
+                PlaylistTrackDataTable.slice(PlaylistTrackDataTable.addedAt.max()).selectAll().firstOrNull()
+                    ?.getOrNull<String?>(PlaylistTrackDataTable.addedAt.max())
+            }
+        }
+
         fun deleteDeletedTrack() {
             transaction {
                 PlaylistTrackDataTable.deleteWhere {

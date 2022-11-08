@@ -1,8 +1,5 @@
 package com.n0n5ense.spotifydiff
 
-import com.adamratzman.spotify.SpotifyAppApi
-import com.adamratzman.spotify.models.PlaylistTrack
-import com.adamratzman.spotify.spotifyAppApi
 import com.n0n5ense.spotifydiff.database.PlaylistDiffDatabase
 import com.n0n5ense.spotifydiff.util.UsersWithCache
 import kotlinx.cli.ArgParser
@@ -18,7 +15,12 @@ import net.dv8tion.jda.api.entities.MessageEmbed
 import net.dv8tion.jda.api.events.message.MessageReceivedEvent
 import net.dv8tion.jda.api.hooks.ListenerAdapter
 import net.dv8tion.jda.api.requests.GatewayIntent
+import se.michaelthelin.spotify.SpotifyApi
+import se.michaelthelin.spotify.model_objects.specification.Episode
+import se.michaelthelin.spotify.model_objects.specification.PlaylistTrack
+import se.michaelthelin.spotify.model_objects.specification.Track
 import java.awt.Color
+import java.time.Instant
 import kotlin.time.Duration.Companion.minutes
 
 data class PlaylistUser(
@@ -48,19 +50,21 @@ data class DiscordChannel(
     val channelId: String
 )
 
-private fun PlaylistTrack.toPlaylistTrackData(number: Int): PlaylistTrackData? {
-    val track = this.track?.asTrack ?: return null
+private fun PlaylistTrack.toPlaylistTrackData(number: Int): PlaylistTrackData {
+    val track = this.track as? Track
+    val episode = this.track as? Episode
     return PlaylistTrackData(
         number = number,
-        addedUserId = this.addedBy?.id,
-        addedAt = this.addedAt,
-        trackUrl = track.externalUrls.spotify,
-        title = track.name,
-        albumName = track.album.name,
-        albumUrl = track.album.externalUrls.spotify,
-        trackId = track.id,
-        artists = track.artists.joinToString { it.name },
-        jacketImageUrl = track.album.images.firstOrNull()?.url ?: ""
+        addedUserId = this.addedBy.id,
+        addedAt = this.addedAt.toString(),
+        trackUrl = track?.externalUrls?.externalUrls?.values?.firstOrNull()
+            ?: episode?.externalUrls?.externalUrls?.values?.firstOrNull() ?: "",
+        title = track?.name ?: episode?.name ?: "",
+        albumName = track?.album?.name ?: "",
+        albumUrl = track?.album?.externalUrls?.externalUrls?.values?.firstOrNull() ?: "",
+        trackId = track?.id ?: episode?.id ?: "",
+        artists = track?.artists?.joinToString { it.name } ?: "",
+        jacketImageUrl = track?.album?.images?.maxByOrNull { it.width }?.url ?: ""
     )
 }
 
@@ -115,7 +119,7 @@ private fun sendMessageEmbed(jda: JDA, channel: DiscordChannel, messageEmbed: Me
 suspend fun main(args: Array<String>) {
     val parser = ArgParser("SpotifyPlaylistDiffBot")
     val dbPath by parser.argument(ArgType.String, fullName = "dbPath")
-    val playlistId by parser.option(ArgType.String, fullName = "playlistId").default("638w67Ivq7wArdQ402I7ew")
+    val playlistId by parser.argument(ArgType.String, fullName = "playlistId")
     val discordToken by parser.option(ArgType.String, fullName = "discordToken")
         .default(System.getProperty("spotifyDiscordBotToken", ""))
     val clientId by parser.option(ArgType.String, fullName = "spotifyClientId")
@@ -162,14 +166,11 @@ suspend fun main(args: Array<String>) {
         }
     })
 
-    val token = spotifyAppApi(clientId, clientSecret).build().token
-    val api = spotifyAppApi(
-        clientId = clientId,
-        clientSecret = clientSecret,
-        token
-    ) {
-        automaticRefresh = true
-    }.build()
+    val spotifyApi = SpotifyApi.builder().setClientId(clientId).setClientSecret(clientSecret).build()!!
+    val credentialRequest = spotifyApi.clientCredentials().build()
+    runCatching { credentialRequest.execute() }.getOrNull()?.let {
+        spotifyApi.accessToken = it.accessToken
+    }
 
 
     val usersWithCache = UsersWithCache()
@@ -177,10 +178,19 @@ suspend fun main(args: Array<String>) {
     coroutineScope {
         launch {
             while(true) {
+                runCatching { credentialRequest.execute() }.getOrNull()?.let {
+                    spotifyApi.accessToken = it.accessToken
+                }
                 kotlin.runCatching {
-                    println("DO!!!")
-                    fetchLoop(api, playlistId, usersWithCache, jda)
-                    println("Done!!!!")
+                    println("start")
+                    fetchLoop(spotifyApi, playlistId, usersWithCache, jda)
+                    println("Done")
+                }.mapCatching {
+                    PlaylistDiffDatabase.deleteDeletedTrack()
+                }.onFailure {
+                    println(it.stackTraceToString())
+                }
+                kotlin.runCatching {
                     delay(interval.minutes)
                 }
             }
@@ -189,54 +199,56 @@ suspend fun main(args: Array<String>) {
 
 }
 
-suspend fun fetchLoop(api: SpotifyAppApi, playlistId: String, usersWithCache: UsersWithCache, jda: JDA) {
-    val results = fetchTracks(api, playlistId, usersWithCache)
-    PlaylistDiffDatabase.deleteDeletedTrack()
+fun fetchLoop(api: SpotifyApi, playlistId: String, usersWithCache: UsersWithCache, jda: JDA) {
+    val results = pullTracks(api, playlistId, usersWithCache)
 
-    val messages = results.map {
+    val messages = results.mapNotNull {
         when(it) {
             is TrackUpdateResult.Conflict -> makeTrackAddedEmbedText(it, usersWithCache)
             is TrackUpdateResult.Existing -> null
+            is TrackUpdateResult.Pass -> null
             is TrackUpdateResult.NewTrack -> makeTrackAddedEmbedText(it, usersWithCache)
         }
     }
 
+    println("send messages")
     PlaylistDiffDatabase.forEachDiscordChannel { channel ->
-        messages.forEach {
-            if(it != null)
+        runCatching {
+            messages.forEach {
                 sendMessageEmbed(jda, channel, it)
+            }
+        }.onFailure {
+            it.printStackTrace()
         }
     }
+    println("sent ${messages.size} messages @ ${Instant.now()}")
 }
 
-
-suspend fun fetchTracks(
-    api: SpotifyAppApi,
+fun pullTracks(
+    api: SpotifyApi,
     playlistId: String,
     usersWithCache: UsersWithCache
 ): List<TrackUpdateResult> {
+    val latestTime = PlaylistDiffDatabase.getLatestTime()?.let {
+        runCatching {
+            Instant.parse(it)
+        }.getOrNull()
+    }?:Instant.now()
+
     PlaylistDiffDatabase.clearNumberUpdateFlag()
-    val result = mutableListOf<TrackUpdateResult>()
-    getTracks(api, playlistId) { trackData ->
-        trackData.forEach { track ->
-            track.addedUserId?.let { userId ->
-                usersWithCache.get(userId) ?: run {
-                    api.users.getProfile(userId)?.displayName?.let { displayName ->
-                        PlaylistUser(userId, displayName)
-                    }?.also {
-                        usersWithCache.add(it)
-                    }
+    val results = getPlaylistTracksFromSpotify(api, playlistId).map { track ->
+        track.addedUserId?.let { userId ->
+            if(usersWithCache.get(userId) == null) {
+                runCatching {
+                    api.getUsersProfile(userId).build().execute()!!
+                }.getOrNull()?.displayName?.let {
+                    usersWithCache.add(PlaylistUser(userId, it))
                 }
             }
-
-            when(val r = updateTrackData(track)) {
-                is TrackUpdateResult.Conflict -> result += r
-                is TrackUpdateResult.Existing -> {}
-                is TrackUpdateResult.NewTrack -> result += r
-            }
         }
+        updateTrackData(track, latestTime)
     }
-    return result
+    return results
 }
 
 sealed class TrackUpdateResult {
@@ -252,13 +264,21 @@ sealed class TrackUpdateResult {
         val track: PlaylistTrackData,
         val conflictTracks: List<PlaylistTrackData>
     ): TrackUpdateResult()
+
+    data class Pass(
+        val track: PlaylistTrackData
+    ): TrackUpdateResult()
 }
 
-fun updateTrackData(track: PlaylistTrackData): TrackUpdateResult {
+fun updateTrackData(track: PlaylistTrackData, latestTime: Instant): TrackUpdateResult {
     if(!PlaylistDiffDatabase.addTrack(track)) {
         if(PlaylistDiffDatabase.updateNumberIfNeed(track)) {
             return TrackUpdateResult.Existing(track)
         }
+    }
+    val addedAt = runCatching { Instant.parse(track.addedAt) }.getOrNull()
+    if(addedAt?.isAfter(latestTime) == true) {
+        return TrackUpdateResult.Pass(track)
     }
     val conflicts = PlaylistDiffDatabase.searchTitleConflict(track)
     return if(conflicts.isEmpty()) {
@@ -268,19 +288,24 @@ fun updateTrackData(track: PlaylistTrackData): TrackUpdateResult {
     }
 }
 
-suspend fun getTracks(api: SpotifyAppApi, playlistId: String, callback: suspend (List<PlaylistTrackData>) -> Unit) {
+fun getPlaylistTracksFromSpotify(api: SpotifyApi, playlistId: String): List<PlaylistTrackData> {
     val limit = 100
-    var offset = 0
-    while(true) {
-        val rawList = api.playlists.getPlaylistTracks(playlistId, limit, offset)
-        val list = rawList.mapIndexedNotNull { index, playlistTrack ->
-            playlistTrack?.toPlaylistTrackData(index + offset + 1)
+    fun makeList(): List<PlaylistTrackData> {
+        var offset = 0
+        val list = mutableListOf<PlaylistTrackData>()
+        while(true) {
+            val result = runCatching {
+                api.getPlaylistsItems(playlistId).limit(limit).offset(offset).build().execute()
+            }.getOrNull()
+            result ?: return emptyList()
+            list.addAll(result.items.mapIndexed { index, playlistTrack ->
+                playlistTrack.toPlaylistTrackData(index + result.offset)
+            })
+            val next = result.next ?: return list
+            offset += limit
+            println(next)
         }
-        callback(list)
-        if(rawList.size < limit) {
-            return
-        }
-        offset += limit
     }
+    return makeList().also { println("get done") }
 }
 

@@ -21,4 +21,8 @@ class UsersWithCache {
         PlaylistDiffDatabase.addUser(user)
         cache[user.id] = user
     }
+
+    fun contains(id: String): Boolean {
+        return cache.contains(id)
+    }
 }
