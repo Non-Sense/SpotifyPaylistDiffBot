@@ -38,6 +38,10 @@ dependencies {
     implementation("se.michaelthelin.spotify:spotify-web-api-java:7.2.2")
     implementation("net.dv8tion:JDA:4.3.0_277")
     implementation("org.jetbrains.kotlin:kotlin-stdlib:1.7.20")
+
+    implementation("com.squareup.okhttp3:okhttp:4.10.0")
+    implementation("com.fasterxml.jackson.core:jackson-databind:2.14.1")
+
     testImplementation("org.jetbrains.kotlin:kotlin-test:1.7.20")
 }
 

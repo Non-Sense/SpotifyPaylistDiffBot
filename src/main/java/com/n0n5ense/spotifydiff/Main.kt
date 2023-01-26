@@ -1,32 +1,18 @@
 package com.n0n5ense.spotifydiff
 
 import com.n0n5ense.spotifydiff.database.PlaylistDiffDatabase
-import com.n0n5ense.spotifydiff.util.UsersWithCache
 import kotlinx.cli.ArgParser
 import kotlinx.cli.ArgType
 import kotlinx.cli.default
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
-import net.dv8tion.jda.api.EmbedBuilder
-import net.dv8tion.jda.api.JDA
-import net.dv8tion.jda.api.JDABuilder
-import net.dv8tion.jda.api.entities.MessageEmbed
-import net.dv8tion.jda.api.events.message.MessageReceivedEvent
-import net.dv8tion.jda.api.hooks.ListenerAdapter
-import net.dv8tion.jda.api.requests.GatewayIntent
 import se.michaelthelin.spotify.SpotifyApi
 import se.michaelthelin.spotify.model_objects.specification.Episode
 import se.michaelthelin.spotify.model_objects.specification.PlaylistTrack
 import se.michaelthelin.spotify.model_objects.specification.Track
-import java.awt.Color
 import java.time.Instant
 import kotlin.time.Duration.Companion.minutes
-
-data class PlaylistUser(
-    val id: String,
-    val displayName: String
-)
 
 data class PlaylistTrackData(
     val number: Int,
@@ -45,10 +31,6 @@ data class PlaylistTrackData(
     }
 }
 
-data class DiscordChannel(
-    val guildId: String,
-    val channelId: String
-)
 
 private fun PlaylistTrack.toPlaylistTrackData(number: Int): PlaylistTrackData {
     val track = this.track as? Track
@@ -68,103 +50,36 @@ private fun PlaylistTrack.toPlaylistTrackData(number: Int): PlaylistTrackData {
     )
 }
 
-private fun makeTrackAddedEmbedText(track: TrackUpdateResult.NewTrack, usersWithCache: UsersWithCache): MessageEmbed {
-    return EmbedBuilder().apply {
-        setTitle("曲が増えた！！")
-        setColor(Color(46, 204, 113))
-        setThumbnail(track.track.jacketImageUrl)
-        addBlankField(false)
-        addTrackInfo(track.track, usersWithCache)
-    }.build()
+
+private fun makeMessage(track: PlaylistTrackData): String {
+    return """
+        曲が追加されたよ！
+        
+        曲名： ${track.title}
+        アルバム： ${track.albumName}
+        アーティスト： ${track.artists}
+        
+        ${track.trackUrl}
+    """.trimIndent()
 }
-
-private fun makeTrackAddedEmbedText(track: TrackUpdateResult.Conflict, usersWithCache: UsersWithCache): MessageEmbed {
-    return EmbedBuilder().apply {
-        setTitle("曲が増えた！！\nけど同じ曲が既に追加されているかも！！！！")
-        setColor(Color(230, 126, 34))
-        setThumbnail(track.track.jacketImageUrl)
-        addBlankField(false)
-        addField("追加された曲", "", false)
-        addTrackInfo(track.track, usersWithCache)
-        addBlankField(false)
-        addField("被ってそうな曲", "", false)
-        track.conflictTracks.forEach {
-            addTrackInfo(it, usersWithCache, true)
-        }
-    }.build()
-}
-
-private fun EmbedBuilder.addTrackInfo(
-    track: PlaylistTrackData,
-    usersWithCache: UsersWithCache,
-    addNumber: Boolean = false
-) {
-    addField("曲名", "`${track.title}`", true)
-    addField("アルバム", "`${track.albumName}`", true)
-
-    addField("アーティスト", track.artists, false)
-
-    addField("追加した人", "`${usersWithCache.get(track.addedUserId)?.displayName ?: ""}`", true)
-    if(addNumber)
-        addField("番号", "`${track.number}`", true)
-
-    addField("Link", track.trackUrl ?: "", false)
-}
-
-private fun sendMessageEmbed(jda: JDA, channel: DiscordChannel, messageEmbed: MessageEmbed) {
-    jda.getGuildById(channel.guildId)?.getTextChannelById(channel.channelId)?.sendMessage(messageEmbed)?.queue()
-}
-
 
 suspend fun main(args: Array<String>) {
     val parser = ArgParser("SpotifyPlaylistDiffBot")
     val dbPath by parser.argument(ArgType.String, fullName = "dbPath")
     val playlistId by parser.argument(ArgType.String, fullName = "playlistId")
-    val discordToken by parser.option(ArgType.String, fullName = "discordToken")
-        .default(System.getProperty("spotifyDiscordBotToken", ""))
+    val host by parser.argument(ArgType.String, fullName = "host")
+    val accessToken by parser.argument(ArgType.String, fullName = "accessToken")
     val clientId by parser.option(ArgType.String, fullName = "spotifyClientId")
         .default(System.getProperty("spotifyClientId", ""))
     val clientSecret by parser.option(ArgType.String, fullName = "spotifyClientSecret")
         .default(System.getProperty("spotifyClientSecret", ""))
-    val interval by parser.option(ArgType.Int, fullName = "interval", description = "minutes").default(10)
+    val interval by parser.option(ArgType.Int, fullName = "interval", description = "minutes").default(5)
     parser.parse(args)
+
+    val mastodonApi = MastodonApi(host, accessToken)
 
     PlaylistDiffDatabase.connect(dbPath)
     PlaylistDiffDatabase.init()
-
-    val jda = JDABuilder
-        .createDefault(discordToken)
-        .addEventListeners()
-        .enableIntents(GatewayIntent.GUILD_MESSAGES)
-        .build()
-
-    jda.addEventListener(object: ListenerAdapter() {
-        override fun onMessageReceived(event: MessageReceivedEvent) {
-
-            if(event.message.contentRaw.endsWith("!here") && !event.author.isBot) {
-                if(PlaylistDiffDatabase.addDiscordChannel(event.guild.id, event.channel.id)) {
-                    event.channel.sendMessage("ここに住みます").queue()
-                } else {
-                    val existChannel = PlaylistDiffDatabase.getDiscordChannel(event.guild.id)
-                    if(existChannel == null) {
-                        event.channel.sendMessage("よくわからんエラーが起きてるっぽいです").queue()
-                    } else {
-                        val c = event.guild.getTextChannelById(existChannel.channelId)
-                        event.channel.sendMessage("既にチャンネル[${c?.name}]に住んでいるらしいです\n該当チャンネルでメンション付けて`!bye`を打つと出ていきます")
-                            .queue()
-                    }
-                }
-            }
-
-            if(event.message.contentRaw.endsWith("!bye") && !event.author.isBot) {
-                if(PlaylistDiffDatabase.deleteDiscordChannel(DiscordChannel(event.guild.id, event.channel.id))) {
-                    event.channel.sendMessage("さようなら").queue()
-                } else {
-                    event.channel.sendMessage("そもそもここに住んでいないか、よくわからんエラーが起きてます").queue()
-                }
-            }
-        }
-    })
 
     val spotifyApi = SpotifyApi.builder().setClientId(clientId).setClientSecret(clientSecret).build()!!
     val credentialRequest = spotifyApi.clientCredentials().build()
@@ -172,8 +87,6 @@ suspend fun main(args: Array<String>) {
         spotifyApi.accessToken = it.accessToken
     }
 
-
-    val usersWithCache = UsersWithCache()
 
     coroutineScope {
         launch {
@@ -183,7 +96,7 @@ suspend fun main(args: Array<String>) {
                 }
                 kotlin.runCatching {
                     println("start")
-                    fetchLoop(spotifyApi, playlistId, usersWithCache, jda)
+                    fetchLoop(spotifyApi, playlistId, mastodonApi)
                     println("Done")
                 }.mapCatching {
                     PlaylistDiffDatabase.deleteDeletedTrack()
@@ -199,58 +112,41 @@ suspend fun main(args: Array<String>) {
 
 }
 
-fun fetchLoop(api: SpotifyApi, playlistId: String, usersWithCache: UsersWithCache, jda: JDA) {
-    val results = pullTracks(api, playlistId, usersWithCache)
-    var c = 0
-    var n = 0
-    var p = 0
-    var e = 0
+fun fetchLoop(api: SpotifyApi, playlistId: String, mastodonApi: MastodonApi) {
+    val results = pullTracks(api, playlistId)
+
     val messages = results.mapNotNull {
         when(it) {
-            is TrackUpdateResult.Conflict -> makeTrackAddedEmbedText(it, usersWithCache).also { c++ }
-            is TrackUpdateResult.Existing -> null.also{ e++ }
-            is TrackUpdateResult.Pass -> null.also{ p++ }
-            is TrackUpdateResult.NewTrack -> makeTrackAddedEmbedText(it, usersWithCache).also { n++ }
+            is TrackUpdateResult.Existing -> null
+            is TrackUpdateResult.Pass -> null
+            is TrackUpdateResult.NewTrack -> makeMessage(it.track)
         }
     }
 
     println("send messages")
-    PlaylistDiffDatabase.forEachDiscordChannel { channel ->
+    messages.forEach {
         runCatching {
-            messages.forEach {
-                sendMessageEmbed(jda, channel, it)
-            }
+            mastodonApi.postMessage(it)
         }.onFailure {
             it.printStackTrace()
         }
     }
     println("sent ${messages.size} messages @ ${Instant.now()}")
-    println("new: $n\tconflict: $c\tpass: $p\texist: $e")
 }
 
 fun pullTracks(
     api: SpotifyApi,
-    playlistId: String,
-    usersWithCache: UsersWithCache
+    playlistId: String
 ): List<TrackUpdateResult> {
     val latestTime = PlaylistDiffDatabase.getLatestTime()?.let {
         runCatching {
             Instant.parse(it)
         }.getOrNull()
-    }?:Instant.now()
+    } ?: Instant.now()
     println("latestTime = $latestTime")
 
     PlaylistDiffDatabase.clearNumberUpdateFlag()
-    val results = getPlaylistTracksFromSpotify(api, playlistId).map { track ->
-        track.addedUserId?.let { userId ->
-            if(usersWithCache.get(userId) == null) {
-                runCatching {
-                    api.getUsersProfile(userId).build().execute()!!
-                }.getOrNull()?.displayName?.let {
-                    usersWithCache.add(PlaylistUser(userId, it))
-                }
-            }
-        }
+    val results = getPlaylistTracksFromSpotify(api, playlistId).also { println(it.size) }.map { track ->
         updateTrackData(track, latestTime)
     }
     return results
@@ -263,11 +159,6 @@ sealed class TrackUpdateResult {
 
     data class Existing(
         val track: PlaylistTrackData
-    ): TrackUpdateResult()
-
-    data class Conflict(
-        val track: PlaylistTrackData,
-        val conflictTracks: List<PlaylistTrackData>
     ): TrackUpdateResult()
 
     data class Pass(
@@ -285,12 +176,7 @@ fun updateTrackData(track: PlaylistTrackData, latestTime: Instant): TrackUpdateR
     if(addedAt?.isBefore(latestTime) == true) {
         return TrackUpdateResult.Pass(track)
     }
-    val conflicts = PlaylistDiffDatabase.searchTitleConflict(track)
-    return if(conflicts.isEmpty()) {
-        TrackUpdateResult.NewTrack(track)
-    } else {
-        TrackUpdateResult.Conflict(track, conflicts)
-    }
+    return TrackUpdateResult.NewTrack(track)
 }
 
 fun getPlaylistTracksFromSpotify(api: SpotifyApi, playlistId: String): List<PlaylistTrackData> {

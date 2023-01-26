@@ -1,8 +1,6 @@
 package com.n0n5ense.spotifydiff.database
 
-import com.n0n5ense.spotifydiff.DiscordChannel
 import com.n0n5ense.spotifydiff.PlaylistTrackData
-import com.n0n5ense.spotifydiff.PlaylistUser
 import org.jetbrains.exposed.dao.id.IdTable
 import org.jetbrains.exposed.exceptions.ExposedSQLException
 import org.jetbrains.exposed.sql.*
@@ -19,31 +17,7 @@ class PlaylistDiffDatabase {
 
         fun init() {
             transaction {
-                SchemaUtils.create(PlaylistUserTable, PlaylistTrackDataTable, DiscordChannelTable)
-            }
-        }
-
-        fun userExists(userId: String): Boolean {
-            return transaction {
-                PlaylistUserTable.select { exists(PlaylistUserTable.select { PlaylistUserTable.id eq userId }) }
-                    .limit(1)
-            }.firstOrNull() != null
-        }
-
-        fun addUser(user: PlaylistUser) {
-            transaction {
-                PlaylistUserTable.insert {
-                    it[id] = user.id
-                    it[displayName] = user.displayName
-                }
-            }
-        }
-
-        fun getUser(userId: String): PlaylistUser? {
-            return transaction {
-                PlaylistUserTable.select { PlaylistUserTable.id eq userId }.firstOrNull()?.let {
-                    PlaylistUser(id = it[PlaylistUserTable.id].value, displayName = it[PlaylistUserTable.displayName])
-                }
+                SchemaUtils.create(PlaylistUserTable, PlaylistTrackDataTable)
             }
         }
 
@@ -115,45 +89,6 @@ class PlaylistDiffDatabase {
             }
         }
 
-        fun addDiscordChannel(guildId: String, channelId: String): Boolean {
-            try {
-                transaction {
-                    DiscordChannelTable.insert {
-                        it[id] = guildId
-                        it[this.channelId] = channelId
-                    }
-                }
-            } catch(e: ExposedSQLException) {
-                return false
-            }
-            return true
-        }
-
-        fun getDiscordChannel(guildId: String): DiscordChannel? {
-            return transaction {
-                DiscordChannelTable.select {
-                    DiscordChannelTable.id eq guildId
-                }.firstOrNull()?.toDiscordChannel()
-            }
-        }
-
-        fun deleteDiscordChannel(channel: DiscordChannel): Boolean {
-            val n = transaction {
-                DiscordChannelTable.deleteWhere {
-                    (DiscordChannelTable.id eq channel.guildId) and (DiscordChannelTable.channelId eq channel.channelId)
-                }
-            }
-            return n != 0
-        }
-
-        fun forEachDiscordChannel(action: (DiscordChannel) -> Unit) {
-            transaction {
-                DiscordChannelTable.selectAll().forEach {
-                    action(it.toDiscordChannel())
-                }
-            }
-        }
-
         private fun <T: Table> T.deleteWhere(
             limit: Int? = null,
             offset: Long? = null,
@@ -205,18 +140,6 @@ class PlaylistDiffDatabase {
             )
         }
 
-        private object DiscordChannelTable: IdTable<String>("discord_channel") {
-            override val id = text("guild_id").uniqueIndex().entityId()
-            override val primaryKey = PrimaryKey(id)
-            val channelId = text("channel_id")
-        }
-
-        private fun ResultRow.toDiscordChannel(): DiscordChannel {
-            return DiscordChannel(
-                get(DiscordChannelTable.id).value,
-                get(DiscordChannelTable.channelId)
-            )
-        }
     }
 }
 
